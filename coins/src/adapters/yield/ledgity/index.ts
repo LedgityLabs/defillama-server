@@ -58,18 +58,40 @@ async function getTokenPrices(chain: string, timestamp: number) {
     }
 
     const api = await getApi(chain, timestamp);
-    const chainLinkOracleLatestAnswerAbi = {
+    const chainLinkOracleLatestRoundDataAbi = {
       inputs: [],
-      name: "latestAnswer",
-      outputs: [{ internalType: "int256", name: "", type: "int256" }],
+      name: "latestRoundData",
+      outputs: [
+        { internalType: "uint80", name: "roundId", type: "uint80" },
+        { internalType: "int256", name: "answer", type: "int256" },
+        { internalType: "uint256", name: "startedAt", type: "uint256" },
+        { internalType: "uint256", name: "updatedAt", type: "uint256" },
+        { internalType: "uint80", name: "answeredInRound", type: "uint80" }
+      ],
       stateMutability: "view",
       type: "function"
     };
 
-    const eurUSDPrice = await api.call({
-      target: chainLinkOracle,
-      abi: chainLinkOracleLatestAnswerAbi
-    });
+    const [roundId, eurUSDPrice, , updatedAt, answeredInRound] = await api.call(
+      {
+        target: chainLinkOracle,
+        abi: chainLinkOracleLatestRoundDataAbi
+      }
+    );
+
+    const STALENESS_THRESHOLD = 3 * 60 * 60;
+    const now = timestamp || Math.floor(Date.now() / 1000);
+    if (
+      Number(eurUSDPrice) <= 0 ||
+      Number(roundId) === 0 ||
+      Number(answeredInRound) < Number(roundId) ||
+      now - Number(updatedAt) > STALENESS_THRESHOLD
+    ) {
+      console.log(
+        `Chainlink EUR/USD oracle on ${chain} returned invalid or stale data, skipping lyEUR`
+      );
+      return writes;
+    }
 
     const eurWrites = await calculate4626Prices(
       chain,
@@ -78,9 +100,10 @@ async function getTokenPrices(chain: string, timestamp: number) {
       "ledgity"
     );
 
+    const eurUSDRate = Number(eurUSDPrice) / 1e8;
     const adjustedEurWrites = eurWrites.map((write: Write) => ({
       ...write,
-      price: write?.price ? write?.price * (eurUSDPrice / 1e8) : undefined
+      price: write?.price ? write.price * eurUSDRate : undefined
     }));
 
     writes.push(...adjustedEurWrites);
